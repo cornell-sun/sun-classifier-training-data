@@ -1,2 +1,2 @@
-# sun-naive-bayes-model
-Python ML model for a Naive Bayes classifier for predicting the age group of the average readership for an article.
+# sun-classifier-training-data
+Python script that takes in a CSV file denoting age data for the Cornell Sun and generates the necessary features for the Naïve Bayes article age classifier.
