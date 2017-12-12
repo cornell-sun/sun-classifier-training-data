@@ -1,9 +1,10 @@
 import json
-import urllib2
 import requests
 import threading
 import time
 import os
+import urllib2
+from bs4 import BeautifulSoup
 
 # lock on the post_obj for multithreading purposes
 POST_DICT_LOCK = threading.Lock()
@@ -18,29 +19,35 @@ def main():
 
     # article_title -> {age_range -> total_sessions}
     temp_dict = build_article_dict()
+
     # (hashed_dict, total_sessions) = dict_into_buckets(temp_dict)
 
+    # TODO: Filter finished dictionaries by the successful responses for posts
     # age_group -> number_sessions
     total_sessions = count_sessions_by_age(temp_dict)
 
     # article_title -> popular_age_range
     classifications = classify_articles(temp_dict, total_sessions)
 
-    if os.path.isfile("postsdata.txt"):
-        with open("postsdata.txt", "r") as data_file:
+    # write classifications into a text file to be opened in Swift
+    with open("generated_data/post_classifications.txt", "w+") as data_file:
+        json.dump(classifications, data_file)
+
+    if os.path.isfile("generated_data/posts_data.txt"):
+        # already generated posts, no need to request more
+        with open("generated_data/posts_data.txt", "r") as data_file:
             post_obj = json.loads(data_file.read())
     else:
         # populates global post_obj dictionary
         retrieve_post_information(classifications)
-        with open("postsdata.txt", "w+") as data_file:
+        with open("generated_data/posts_data.txt", "w+") as data_file:
             json.dump(post_obj, data_file)
 
     training_data = build_training_data(post_obj)
-    print training_data
 
-    with open("training_data.txt", "w+") as data_file:
+    # write training data into a text file to be opened in Swift
+    with open("generated_data/training_data.txt", "w+") as data_file:
         json.dump(training_data, data_file)
-    print "DONE :)"
 
 def build_article_dict():
     """Read in the first CSV and sort all entries into article buckets."""
@@ -80,9 +87,10 @@ def build_article_dict():
     return temp_dict
 
 def dict_into_buckets(articles):
-    """Group ages into buckets as defined in writeup. Currently hashes into
-    buckets by adding all the smaller age group sessions into the larger
-    bucket, which skews the information towards generally larger buckets."""
+    """CURRENTLY UNUSED: Group ages into buckets as defined in writeup. 
+    Currently hashes intobuckets by adding all the smaller age group sessions 
+    into the largerbucket, which skews the information towards generally larger
+    buckets."""
     bucket_dict = {}
     total_sessions = {
         '18-24': 0,
@@ -96,19 +104,21 @@ def dict_into_buckets(articles):
             '25-44': 0,
             '45+': 0
         }
+
         for group in ranges:
             # Hash into 18-24, 25-44, or 45+
             if group == '18-24':
-                article_ranges_dict['18-24'] += ranges[group]
-                total_sessions['18-24'] += ranges[group]
+                bucket_range = '18-24'
             elif group == '25-34' or group == '35-44':
-                article_ranges_dict['25-44'] += ranges[group]
-                total_sessions['25-44'] += ranges[group]
+                bucket_range = '25-44'
             else:
-                article_ranges_dict['45+'] += ranges[group]
-                total_sessions['45+'] += ranges[group]
+                bucket_range = '45+'
+
+            article_ranges_dict[bucket_range] += ranges[group]
+            total_sessions[bucket_range] += ranges[group]
 
         bucket_dict[article_name] = article_ranges_dict
+
     return (bucket_dict, total_sessions)
 
 def count_sessions_by_age(articles):
@@ -116,12 +126,14 @@ def count_sessions_by_age(articles):
     total_sessions = {}
     for article_name in articles:
         sessions_by_age = articles[article_name]
+
         for age_group in sessions_by_age:
             sessions = sessions_by_age[age_group]
             if age_group in total_sessions:
                 total_sessions[age_group] += sessions
             else:
                 total_sessions[age_group] = sessions
+
     return total_sessions
 
 def classify_articles(articles, sessions):
@@ -160,33 +172,28 @@ def wp_request_article(article):
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36'
     }
     with requests.get(url, headers=headers) as wp_response:
-        # print wp_response.text
-        print wp_response.text
         if wp_response.text == "[]":
             # no responses for this article :(
-            # print "No articles found for article: {}".format(article)
-            print "RETURNING EARLY"
+            print "No article objects found: {}".format(article)
             return
         try:
             wp_post = json.loads(wp_response.text)
         except:
-            print "EXCEPTION RAISED"
+            print "Exception converting response to JSON: {}".format(article)
             return
-        # print wp_response.text
-        wp_single_post = None
+
         if "title" not in wp_post[0]:
             # title not found?
-            # print "No article title found for article: {}".format(article)
+            print "Title not found in response: {}".format(article)
             return
         elif article != wp_post[0]["title"]["rendered"]:
             # titles not equal, no bueno
+            print "Best result title not equal: {}".format(article)
             return
-        else:
-            # should be valid
-            wp_single_post = wp_post[0]
-        if not wp_single_post is None:
-            with POST_DICT_LOCK:
-                post_obj[article] = wp_single_post
+
+        wp_single_post = wp_post[0]
+        with POST_DICT_LOCK:
+            post_obj[article] = wp_single_post
 
 def retrieve_post_information(classifications):
     """Run requests on multiple threads to the Wordpress backend. Retrieves the
@@ -197,6 +204,7 @@ def retrieve_post_information(classifications):
         thread = threading.Thread(target=wp_request_article, args=[article])
         threads.append(thread)
 
+    # add 0.75s pause to not overflow the server taking requests
     for thread in threads:
         thread.start()
         time.sleep(0.75)
@@ -209,10 +217,24 @@ def build_training_data(posts):
     training_data = {}
     for article in posts:
         post_obj = posts[article]
-        features = _build_feature_dict(post_obj)
+        features = _build_word_count_dict(post_obj)
         training_data[article] = features
     return training_data
 
+def _build_word_count_dict(post):
+    """Returns a dictionary of words to their number of occurences for a given
+    post object."""
+    # TODO: Should filter out empty strings and beginning / ending characters
+    # not letters or numbers. ex. "(something"
+    word_counts = {}
+    soup = BeautifulSoup(post["content"]["rendered"], "html.parser")
+    for word in soup.get_text().replace("\n", " ").split(" "):
+        word = word.strip().replace(", ", " ")
+        if word in word_counts:
+            word_counts[word] += 1
+        else:
+            word_counts[word] = 1
+    return word_counts
 
 def _build_feature_dict(post):
     """Return a dictionary of features for a given post object."""
@@ -232,6 +254,7 @@ def _build_feature_dict(post):
     if pipe_index == -1:
         pipe_index = len(article_title)
     features["title_split_on_pipe"] = article_title[:pipe_index].strip()
+
     return features
 
 if __name__ == '__main__':
