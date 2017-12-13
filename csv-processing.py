@@ -222,7 +222,7 @@ def build_training_data(posts):
     return training_data
 
 def _build_word_count_dict(post):
-    """Returns a dictionary of words to their number of occurences for a given
+    """Returns a dictionary of words to their number of occurrences for a given
     post object."""
     # TODO: Should filter out empty strings and beginning / ending characters
     # not letters or numbers. ex. "(something"
